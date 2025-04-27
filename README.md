@@ -43,7 +43,7 @@ What's working:
   ;; to add more context for Augment Code
   (setq lsp-augment-additional-context-folders
           '("~/projects/shared-library"
-           "~/projects/core-framework\"))))
+           "~/projects/core-framework"))))
 ```
 
 The above snippet will git clone the repo and set up the correct load path.
