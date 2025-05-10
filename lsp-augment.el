@@ -56,6 +56,11 @@ The inputs are the file name and the major mode of the buffer."
   :type 'function
   :group 'lsp-augment)
 
+(defcustom lsp-augment-chat-buffer-name "*Augment Chat History*"
+  "Buffer name to be used for chats."
+  :group 'lsp-augment
+  :type 'string)
+
 (defvar-local lsp-augment--chat-history nil
   "Chat history for the Augment buffer.")
 
@@ -89,7 +94,7 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
 
 (defun lsp-augment--chat-append-text (text)
   "Append text to the Augment chat buffer."
-  (let ((buf-name "*Augment Chat History*"))
+  (let ((buf-name lsp-augment-chat-buffer-name))
     (with-current-buffer (get-buffer-create buf-name)
       (unless (derived-mode-p 'markdown-view-mode)
 	(markdown-view-mode))
@@ -124,7 +129,7 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
   "Update chat history when a response is received."
   (let ((text (lsp-get response :text))
 	(request-id (lsp-get response :requestId))
-	(buf (get-buffer "*Augment Chat History*")))
+	(buf (get-buffer lsp-augment-chat-buffer-name)))
     (when (and buf text request-id)
       (with-current-buffer buf
 	(unless (local-variable-p 'lsp-augment--chat-history)
@@ -139,7 +144,7 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
   "Send a chat request to Augment."
   (interactive "MMessage: ")
   (condition-case err
-      (let* ((chat-buf (get-buffer "*Augment Chat History*"))
+      (let* ((chat-buf (get-buffer lsp-augment-chat-buffer-name))
 	     (chat-history (and chat-buf
 				(buffer-local-value 'lsp-augment--chat-history chat-buf)))
 	     (chat-message (append (list :textDocumentPosition (lsp--text-document-position-params)
