@@ -144,24 +144,33 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
   "Send a chat request to Augment."
   (interactive "MMessage: ")
   (condition-case err
-      (let* ((chat-buf (get-buffer lsp-augment-chat-buffer-name))
-	     (chat-history (and chat-buf
-				(buffer-local-value 'lsp-augment--chat-history chat-buf)))
-	     (chat-message (append (list :textDocumentPosition (lsp--text-document-position-params)
-					:message message)
-				  (when (region-active-p)
-				    (list :selectedText
-					  (buffer-substring-no-properties (region-beginning) (region-end))))
-				  (when chat-history
-				    (list :history chat-history)))))
-	(lsp-log "chat request: %s" (json-encode chat-message))
-	(lsp-augment--chat-append-message message)
-	(lsp-request-async "augment/chat"
-			   chat-message
-			   (lambda (response)
-			     (lsp-augment--chat-response-handler message response))
-			   :error-handler (lambda (err)
-					    (message "Chat error: %s" (error-message-string err)))))
+      (let* ((chat-buf (get-buffer-create lsp-augment-chat-buffer-name))
+             (workspace (lsp-workspaces))
+             (chat-history (buffer-local-value 'lsp-augment--chat-history chat-buf))
+             (buffer-type (when (local-variable-p 'lsp-augment--buffer-type)
+                            (buffer-local-value 'lsp-augment--buffer-type (get-buffer chat-buf))))
+             (document-position-params (if (and buffer-type (string= buffer-type "chat"))
+                                           '(:textDocument (:uri "file:///dummy.txt")
+                                                           :position (:line 0 :character 0))
+                                         (lsp--text-document-position-params)))
+             (chat-message (append (list :textDocumentPosition document-position-params
+                                         :message message)
+                                   (when (region-active-p)
+                                     (list :selectedText
+                                           (buffer-substring-no-properties (region-beginning) (region-end))))
+                                   (when chat-history
+                                     (list :history chat-history)))))
+        (lsp-log "chat request: %s" (json-encode chat-message))
+        (lsp-augment--chat-append-message message)
+        (lsp-request-async "augment/chat"
+                           chat-message
+                           (lambda (response)
+                             (lsp-augment--chat-response-handler message response))
+                           :error-handler (lambda (err)
+                                            (message "Chat error: %s" (error-message-string err))))
+        (with-current-buffer chat-buf
+          (set (make-local-variable 'lsp-augment--buffer-type) "chat")
+          (set (make-local-variable 'lsp-augment--workspace) workspace)))
     (error (message "Failed to send chat message: %s" (error-message-string err)))))
 
 (defun lsp-augment-reset-chat ()
