@@ -174,7 +174,7 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
                                            (buffer-substring-no-properties (region-beginning) (region-end))))
                                    (when chat-history
                                      (list :history chat-history)))))
-        (lsp-log "chat request: %s" (json-encode chat-message))
+        (lsp-log "lsp-augment chat request: %s" (json-encode chat-message))
         (lsp-augment--chat-append-message message)
         (with-lsp-workspace workspace
           (lsp-request-async "augment/chat"
