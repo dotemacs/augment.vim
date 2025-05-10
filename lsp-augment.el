@@ -140,12 +140,26 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
 					   :response_text ,text
 					   :request_id ,request-id)]))))))
 
+(defun lsp-augment-find-workspace ()
+  "Find an active Augment LSP workspace for the current buffer or any buffer."
+  (or
+   ;; First try to get the workspace for the current buffer
+   (cl-find-if (lambda (ws)
+                 (eq (lsp--client-server-id (lsp--workspace-client ws))
+                     'augment-lsp-server))
+               (lsp-workspaces))
+   ;; If that fails, look for any Augment workspace in the session
+   (cl-find-if (lambda (ws)
+                 (eq (lsp--client-server-id (lsp--workspace-client ws))
+                     'augment-lsp-server))
+               (lsp--session-workspaces (lsp-session)))))
+
 (defun lsp-augment-chat (message)
   "Send a chat request to Augment."
   (interactive "MMessage: ")
   (condition-case err
       (let* ((chat-buf (get-buffer-create lsp-augment-chat-buffer-name))
-             (workspace (lsp-workspaces))
+             (workspace (lsp-augment-find-workspace))
              (chat-history (buffer-local-value 'lsp-augment--chat-history chat-buf))
              (buffer-type (when (local-variable-p 'lsp-augment--buffer-type)
                             (buffer-local-value 'lsp-augment--buffer-type (get-buffer chat-buf))))
@@ -162,15 +176,18 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
                                      (list :history chat-history)))))
         (lsp-log "chat request: %s" (json-encode chat-message))
         (lsp-augment--chat-append-message message)
-        (lsp-request-async "augment/chat"
-                           chat-message
-                           (lambda (response)
-                             (lsp-augment--chat-response-handler message response))
-                           :error-handler (lambda (err)
-                                            (message "Chat error: %s" (error-message-string err))))
+        (with-lsp-workspace workspace
+          (lsp-request-async "augment/chat"
+                             chat-message
+                             (lambda (response)
+                               (lsp-augment--chat-response-handler message response))
+                             :error-handler (lambda (err)
+                                              (message "Chat error: %s" (error-message-string err)))))
         (with-current-buffer chat-buf
-          (set (make-local-variable 'lsp-augment--buffer-type) "chat")
-          (set (make-local-variable 'lsp-augment--workspace) workspace)))
+          (unless (local-variable-p 'lsp-augment--buffer-type)
+            (set (make-local-variable 'lsp-augment--buffer-type) "chat"))
+          (unless (local-variable-p 'lsp-augment--workspace)
+            (set (make-local-variable 'lsp-augment--workspace) workspace))))
     (error (message "Failed to send chat message: %s" (error-message-string err)))))
 
 (defun lsp-augment-reset-chat ()
