@@ -159,19 +159,47 @@ Enter the authentication code: " (lsp-get signin-response :url)))))
 					   :response_text ,text
 					   :request_id ,request-id)]))))))
 
+(defun lsp-augment--chat-buffer-p (&optional buffer)
+  "Return non-nil if BUFFER is an Augment chat buffer.
+If BUFFER is nil, check the current buffer."
+  (let ((buf (or buffer (current-buffer))))
+    (with-current-buffer buf
+      (and (or (string= (buffer-name) lsp-augment-chat-buffer-name)
+               (string= (buffer-name) "*augment-chat*"))))))
+
 (defun lsp-augment-find-workspace ()
-  "Find an active Augment LSP workspace for the current buffer or any buffer."
-  (or
-   ;; First try to get the workspace for the current buffer
-   (cl-find-if (lambda (ws)
-                 (eq (lsp--client-server-id (lsp--workspace-client ws))
-                     'augment-lsp-server))
-               (lsp-workspaces))
-   ;; If that fails, look for any Augment workspace in the session
-   (cl-find-if (lambda (ws)
-                 (eq (lsp--client-server-id (lsp--workspace-client ws))
-                     'augment-lsp-server))
-               (lsp--session-workspaces (lsp-session)))))
+  "Find an active Augment LSP workspace for the current code buffer or chat
+buffer. Only looks at workspaces from the same project root as the
+current buffer or chat's workspace variable."
+  (let* ((current-file (buffer-file-name))
+         (current-dir default-directory)
+         (workspace (or
+                     ;; Then try to get the workspace for the current buffer
+                     (cl-find-if (lambda (ws)
+                                   (eq (lsp--client-server-id (lsp--workspace-client ws))
+                                       'augment-lsp-server))
+                                 (lsp-workspaces))
+                     ;; After try to find a workspace with the same
+                     ;; root as the current buffer
+                     (and current-file
+                          (cl-find-if (lambda (ws)
+                                        (and (eq (lsp--client-server-id (lsp--workspace-client ws))
+                                                 'augment-lsp-server)
+                                             (let ((root (lsp--workspace-root ws)))
+                                               (string-prefix-p root current-file))))
+                                      (lsp--session-workspaces (lsp-session))))
+                     ;; Or try with the current directory
+                     (cl-find-if (lambda (ws)
+                                   (and (eq (lsp--client-server-id (lsp--workspace-client ws))
+                                            'augment-lsp-server)
+                                        (let ((root (lsp--workspace-root ws)))
+                                          (string-prefix-p root current-dir))))
+                                 (lsp--session-workspaces (lsp-session))))))
+
+    (if workspace
+        workspace
+      (error "The workspace could not be found in %s, stopping..." (buffer-name)))))
+
 
 (defun lsp-augment-chat-buffer (message)
   "Send a message to Augment Code's buffer based chat, where the input is
@@ -203,10 +231,11 @@ entered into minibuffer."
                              :error-handler (lambda (err)
                                               (message "Chat error: %s" (error-message-string err)))))
         (with-current-buffer chat-buf
-          (unless (local-variable-p 'lsp-augment--buffer-type)
-            (set (make-local-variable 'lsp-augment--buffer-type) 'chat))
-          (unless (local-variable-p 'lsp-augment--workspace)
-            (set (make-local-variable 'lsp-augment--workspace) workspace))))
+          (progn
+            (unless (local-variable-p 'lsp-augment--buffer-type)
+              (set (make-local-variable 'lsp-augment--buffer-type) 'chat))
+            (unless (local-variable-p 'lsp-augment--workspace)
+              (set (make-local-variable 'lsp-augment--workspace) workspace)))))
     (error (message "Failed to send chat message: %s" (error-message-string err)))))
 
 ;; TODO: make it a buffer local variable!
@@ -231,111 +260,95 @@ entered into minibuffer."
         (if (get-buffer "*augment-chat*")
             (switch-to-buffer "*augment-chat*")
           ;; Otherwise start a new chat
-          (let ((shell-maker-config
-                 (make-shell-maker-config
-                  :name "augment-chat"
-                  :prompt "augment> "
-                  :prompt-regexp "^augment> "
-                  :execute-command
-                  (lambda (command shell)
-                    ;; Store the shell for the chat chunk handler to use
-                    (setq lsp-augment--current-shell shell)
-                    ;; really noisy, but detailed output
-                    ;;(message "---> DEBUG: Set current shell to %s" shell)
+          (let* ((workspace (lsp-augment-find-workspace))
+                 (shell-maker-config
+                  (make-shell-maker-config
+                   :name "augment-chat"
+                   :prompt "augment> "
+                   :prompt-regexp "^augment> "
+                   :execute-command
+                   (lambda (command shell)
+                     ;; Store the shell for the chat chunk handler to use
+                     (setq lsp-augment--current-shell shell)
+                     ;; really noisy, but detailed output
+                     ;;(message "---> DEBUG: Set current shell to %s" shell)
 
-                    ;; Display user message
-                    ;; (funcall (map-elt shell :write-output)
-                    ;;          (format "# You\n\n%s\n\n---\n\n# Augment\n\n" command))
+                     ;; Display user message
+                     ;; (funcall (map-elt shell :write-output)
+                     ;;          (format "# You\n\n%s\n\n---\n\n# Augment\n\n" command))
 
-                    ;; Prepare the chat message
-                    (let* ((chat-message (list :message command))
-                           (file-name nil)
-                           (line-num 0)
-                           (char-pos 0))
+                     ;; Prepare the chat message
+                     (let* ((chat-message (list :message command))
+                            (file-name nil)
+                            (line-num 0)
+                            (char-pos 0))
 
-                      ;; Try to get file info from visible buffer
-                      (when-let ((buf (get-buffer-window))
-                                 (file-buf (and buf (window-buffer buf)))
-                                 (buf-file-name (and file-buf (buffer-file-name file-buf))))
-                        (with-current-buffer file-buf
-                          (setq file-name buf-file-name
-                                line-num (line-number-at-pos)
-                                char-pos (- (point) (line-beginning-position)))))
+                       ;; Try to get file info from visible buffer
+                       (when-let ((buf (get-buffer-window))
+                                  (file-buf (and buf (window-buffer buf)))
+                                  (buf-file-name (and file-buf (buffer-file-name file-buf))))
+                         (with-current-buffer file-buf
+                           (setq file-name buf-file-name
+                                 line-num (line-number-at-pos)
+                                 char-pos (- (point) (line-beginning-position)))))
 
-                      ;; Add position info - use real file if available, otherwise use a dummy value
-                      (if file-name
-                          (setq chat-message
-                                (append chat-message
-                                        (list :textDocumentPosition
-                                              (list :textDocument (list :uri (lsp--path-to-uri file-name))
-                                                    :position (list :line (1- line-num)
-                                                                    :character char-pos)))))
-                        ;; Use a dummy value when no file is available
-                        (setq chat-message
-                              (append chat-message
-                                      (list :textDocumentPosition
-                                            (list :textDocument (list :uri "file:///dummy.txt")
-                                                  :position (list :line 0 :character 0))))))
+                       ;; Add position info - use real file if available, otherwise use a dummy value
+                       (if file-name
+                           (setq chat-message
+                                 (append chat-message
+                                         (list :textDocumentPosition
+                                               (list :textDocument (list :uri (lsp--path-to-uri file-name))
+                                                     :position (list :line (1- line-num)
+                                                                     :character char-pos)))))
+                         ;; Use a dummy value when no file is available
+                         (setq chat-message
+                               (append chat-message
+                                       (list :textDocumentPosition
+                                             (list :textDocument (list :uri "file:///dummy.txt")
+                                                   :position (list :line 0 :character 0))))))
 
-                      ;; Add selected text if region is active
-                      (when (region-active-p)
-                        (setq chat-message
-                              (append chat-message
-                                      (list :selectedText
-                                            (buffer-substring-no-properties (region-beginning) (region-end))))))
+                       ;; Add selected text if region is active
+                       (when (region-active-p)
+                         (setq chat-message
+                               (append chat-message
+                                       (list :selectedText
+                                             (buffer-substring-no-properties (region-beginning) (region-end))))))
+                       (if workspace
+                           (with-lsp-workspace workspace
+                             ;; Send request to LSP server
+                             (lsp-request-async
+                              "augment/chat"
+                              chat-message
+                              (lambda (response)
+                                ;; Store response in history
+                                (let ((text (or (lsp-get response :text) ""))
+                                      (request-id (or (lsp-get response :requestId) "unknown")))
 
-                      ;; Find the active Augment workspace
-                      (let ((workspace (lsp-augment-find-workspace)))
-                        (if workspace
-                            ;;(funcall (map-elt shell :write-output) "This works. \n")
-                            (with-lsp-workspace workspace
-                              ;; Send request to LSP server
-                              (lsp-request-async
-                               "augment/chat"
-                               chat-message
-                               (lambda (response)
-                                 ;; Store response in history
-                                 (let ((text (or (lsp-get response :text) ""))
-                                       (request-id (or (lsp-get response :requestId) "unknown")))
+                                  (message "DEBUG: Response complete, finishing output")
 
-                                   (message "DEBUG: Response complete, finishing output")
-
-                                   ;; Safely finish the output
-                                   (condition-case err
-                                       (progn
-                                         ;; Add newlines to separate response from prompt
-                                         ;;(funcall (map-elt shell :write-output) "\n\n")
-                                         ;; Just one newline as it looks better
-                                         (funcall (map-elt shell :write-output) "\n")
-                                         ;; Finish output to display prompt
-                                         (funcall (map-elt shell :finish-output) t)
-                                         ;;(message "---> DEBUG: %S" shell)
-                                         ;; Force the buffer to be ready for input
-                                         ;; (when (buffer-live-p (map-elt shell :buffer))
-                                         ;;   (with-current-buffer (map-elt shell :buffer)
-                                         ;;     (shell-maker--set-state (map-elt shell :buffer) 'ready)))
-                                         )
-                                     (error (message "Error in finish-output1: %s" (error-message-string err))))))
-                               :error-handler (lambda (err)
-                                                (message "DEBUG: Error handler called with: %S" err)
-                                                (funcall (map-elt shell :write-output)
-                                                         (format "Error: %s\n\n" (error-message-string err)))
-                                                (funcall (map-elt shell :finish-output) nil))))
-                          (funcall (map-elt shell :write-output)
-                                   "Error: No active Augment LSP server found. Please open a file with an attached Augment server first.\n\n")
-                          (funcall (map-elt shell :finish-output) nil)))))
-                  :on-command-finished (lambda (_command _output shell)
-                                         (message "DEBUG: Command finished callback called")
-                                         ;;(spinner-stop)
-                                         ;;;; Ensure prompt is visible and cursor is at the end
-                                         ;;(when (buffer-live-p (map-elt shell :buffer))
-                                         ;;  (with-current-buffer (map-elt shell :buffer)
-                                         ;;    (goto-char (point-max))
-                                         ;;    ;; Force shell-maker to be ready for input
-                                         ;;    (shell-maker--set-state (map-elt shell :buffer) 'ready)))
-                                         ))))
-            (shell-maker-start shell-maker-config)))
-        (message "Augment chat started. Type your message and press Enter."))
+                                  ;; Safely finish the output
+                                  (condition-case err
+                                      (progn
+                                        ;; Add newlines to separate response from prompt
+                                        ;;(funcall (map-elt shell :write-output) "\n\n")
+                                        ;; Just one newline as it looks better
+                                        (funcall (map-elt shell :write-output) "\n")
+                                        ;; Finish output to display prompt
+                                        (funcall (map-elt shell :finish-output) t))
+                                    (error (message "Error in finish-output1: %s" (error-message-string err))))))
+                              :error-handler (lambda (err)
+                                               (message "DEBUG: Error handler called with: %S" err)
+                                               (funcall (map-elt shell :write-output)
+                                                        (format "Error: %s\n\n" (error-message-string err)))
+                                               (funcall (map-elt shell :finish-output) nil))))
+                         (funcall (map-elt shell :write-output)
+                                  "Error: No active Augment LSP server found. Please open a file with an attached Augment server first.\n\n")
+                         (funcall (map-elt shell :finish-output) nil))))
+                   :on-command-finished (lambda (_command _output shell)
+                                          (message "DEBUG: Command finished callback called")))))
+            (with-current-buffer (shell-maker-start shell-maker-config)
+              (setq-local lsp-augment--workspace workspace)))
+          (message "Augment chat started. Type your message and press Enter.")))
     (error (message "Failed to start chat: %s" (error-message-string err)))))
 
 (defun lsp-augment-chat (&optional message)
